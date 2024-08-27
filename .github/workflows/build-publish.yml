@@ -1,0 +1,97 @@
+name: Build and Publish
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**/*.gitattributes"
+      - "**/*.gitignore"
+      - "**/*.md"
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: "18"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build:
+    name: build
+    runs-on: [self-hosted, docker-runner]
+    if: github.event.repository.fork == false || github.event_name == 'pull_request'
+    outputs:
+      version-number: ${{ steps.generate-version.outputs.version-number }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Generate version
+        id: generate-version
+        uses: github-actions/generate-version@v1
+        with:
+          prefix: "1.0"
+
+      - name: Setup Node
+        uses: actions/setup-node@v3
+        with:
+          node-version: "18.x"
+
+      - name: Build, test and publish
+        uses: github-actions/npm-package-publish@v1
+        with:
+          working-directory: "."
+          version-number: "${{ steps.generate-version.outputs.version-number }}"
+          package-manager: "yarn"
+          artifactory-npm-token: "${{ secrets.ARTIFACTORY_NPM_TOKEN }}"
+          action: "build"
+
+  publish:
+    name: publish
+    needs: build
+    runs-on: [self-hosted, docker-runner]
+    if: ${{ github.event.repository.fork == false && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Node
+        uses: actions/setup-node@v3
+        with:
+          node-version: "18.x"
+
+      - name: Build and publish
+        uses: github-actions/npm-package-publish@v1
+        with:
+          working-directory: "."
+          version-number: "${{ needs.build.outputs.version-number }}"
+          package-manager: "yarn"
+          artifactory-npm-token: "${{ secrets.ARTIFACTORY_NPM_TOKEN }}"
+          action: "publish"
+
+  tag:
+    name: tag
+    needs: [build, publish]
+    runs-on: [self-hosted, docker-runner]
+    if: ${{ github.event.repository.fork == false && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    permissions:
+      contents: write
+
+    steps:
+      - name: Create tag
+        uses: actions/github-script@v6
+        with:
+          script: |
+            github.rest.git.createRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: 'refs/tags/${{ needs.build.outputs.version-number }}',
+              sha: context.sha
+            })
